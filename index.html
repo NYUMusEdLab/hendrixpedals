@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Hendrix Pedalboard Simulator</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #111; color: white; }
+        canvas { display: block; margin: 20px auto; border: 1px solid #666; background: #222; }
+        button { margin: 10px; padding: 10px; font-size: 1em; }
+        .controls { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 20px; }
+        .pedal { border: 2px solid #666; border-radius: 10px; background: #222; margin: 10px; padding: 10px; width: 180px; transition: border-color 0.3s, box-shadow 0.3s; }
+        .pedal.active { border-color: #0f0; box-shadow: 0 0 10px #0f0; }
+        .pedal h3 { margin-top: 0; }
+    </style>
+</head>
+<body>
+<h1>Jimi Hendrix Pedalboard Simulator</h1>
+<audio id="guitarSample" src="guitarsample.mp3" loop crossorigin="anonymous"></audio>
+<button id="playButton" onclick="togglePlayback()">Play</button>
+<button id="bypassButton" onclick="toggleBypass()">Original</button>
+
+<canvas id="waveform" width="800" height="200"></canvas>
+
+<div class="controls">
+    <div class="pedal">
+        <h3>Wah-Wah</h3>
+        <label><input type="checkbox" id="wahToggle" checked> On</label>
+        <input type="range" id="wahFreq" min="300" max="2000" value="1000">
+    </div>
+    <div class="pedal">
+        <h3>Octavia</h3>
+        <label><input type="checkbox" id="octaveToggle" checked> On</label>
+        <input type="range" id="octaveMix" min="0" max="1" step="0.01" value="0.5">
+    </div>
+    <div class="pedal">
+        <h3>Fuzz Face</h3>
+        <label><input type="checkbox" id="fuzzToggle" checked> On</label>
+        <input type="range" id="fuzzGain" min="1" max="50" value="10">
+    </div>
+    <div class="pedal">
+        <h3>Uni-Vibe</h3>
+        <label><input type="checkbox" id="vibeToggle" checked> On</label>
+        <label for="vibeMode">Mode</label>
+        <select id="vibeMode">
+            <option value="vibrato">Vibrato</option>
+            <option value="chorus">Chorus</option>
+        </select>
+        <label for="vibeSpeed">Speed</label>
+        <input type="range" id="vibeSpeed" min="0.1" max="10" step="0.1" value="2">
+    </div>
+</div>
+
+<script>
+    let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let source, analyser, canvasCtx, dataArray;
+    let wahFilter, octaveUp, fuzz, gainNode, tremolo;
+    let delayNode, lfoGain, vibeLFO;
+    let dryGain, wetGain;
+    let bypass = false;
+
+    const sample = document.getElementById('guitarSample');
+    const playButton = document.getElementById('playButton');
+    const canvas = document.getElementById('waveform');
+    canvasCtx = canvas.getContext('2d');
+
+    function makeFuzzCurve(gain = 10) {
+        let samples = 44100, curve = new Float32Array(samples);
+        for (let i = 0; i < samples; ++i) {
+            let x = (i * 2) / samples - 1;
+            curve[i] = Math.tanh(gain * x);
+        }
+        return curve;
+    }
+
+    function setupAudio() {
+        if (!source) {
+            source = audioCtx.createMediaElementSource(sample);
+        }
+
+        wahFilter = audioCtx.createBiquadFilter();
+        wahFilter.type = 'bandpass';
+        wahFilter.frequency.value = document.getElementById('wahFreq').value;
+
+        octaveUp = audioCtx.createWaveShaper();
+        let octCurve = new Float32Array(65536);
+        for (let i = 0; i < 65536; i++) {
+            let x = (i - 32768) / 32768;
+            // Simulates a folded-over upper harmonic + fuzz response
+            octCurve[i] = Math.tanh((2 * x) + (x * x)) * (x < 0 ? -1 : 1);
+        }
+        octaveUp.curve = octCurve;
+        octaveUp.oversample = '4x';
+
+        fuzz = audioCtx.createWaveShaper();
+        fuzz.curve = makeFuzzCurve(document.getElementById('fuzzGain').value);
+        fuzz.oversample = '4x';
+
+        tremolo = audioCtx.createGain();
+        tremolo.gain.value = 0.5;
+        gainNode = audioCtx.createGain();
+
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        dataArray = new Uint8Array(analyser.fftSize);
+
+        dryGain = audioCtx.createGain();
+        wetGain = audioCtx.createGain();
+        dryGain.gain.value = 0;
+        wetGain.gain.value = 1;
+
+        reconnectChain();
+
+        draw();
+
+        document.getElementById('wahFreq').oninput = e => wahFilter.frequency.value = e.target.value;
+        document.getElementById('fuzzGain').oninput = e => fuzz.curve = makeFuzzCurve(e.target.value);
+        document.getElementById('vibeSpeed').oninput = e => vibeLFO.frequency.value = e.target.value;
+
+        ['wah', 'octave', 'fuzz', 'vibe'].forEach(id => {
+            const toggle = document.getElementById(id + 'Toggle');
+            const pedalDiv = toggle.closest('.pedal');
+            const updateVisual = () => {
+                if (toggle.checked) pedalDiv.classList.add('active');
+                else pedalDiv.classList.remove('active');
+            };
+            toggle.addEventListener('change', () => { updateVisual(); reconnectChain(); });
+            updateVisual();
+        });
+
+        document.getElementById('vibeMode').onchange = reconnectChain;
+    }
+
+    function reconnectChain() {
+        try {
+            if (!source) return;
+
+            // Disconnect all
+            source.disconnect();
+            wahFilter.disconnect();
+            octaveUp.disconnect();
+            fuzz.disconnect();
+            tremolo.disconnect();
+            gainNode.disconnect();
+            analyser.disconnect();
+            if (delayNode) delayNode.disconnect();
+            if (lfoGain) lfoGain.disconnect();
+            if (vibeLFO) vibeLFO.disconnect();
+
+            // Start routing
+            let lastNode = source;
+            if (document.getElementById('wahToggle').checked) {
+                lastNode.connect(wahFilter);
+                lastNode = wahFilter;
+            }
+            if (document.getElementById('octaveToggle').checked) {
+                lastNode.connect(octaveUp);
+                lastNode = octaveUp;
+            }
+            if (document.getElementById('fuzzToggle').checked) {
+                lastNode.connect(fuzz);
+                lastNode = fuzz;
+            }
+            if (document.getElementById('vibeToggle').checked) {
+                const mode = document.getElementById('vibeMode').value;
+                vibeLFO = audioCtx.createOscillator();
+                vibeLFO.frequency.value = document.getElementById('vibeSpeed').value;
+                vibeLFO.type = 'sine';
+
+                if (mode === 'chorus') {
+                    delayNode = audioCtx.createDelay();
+                    delayNode.delayTime.value = 0.03;
+                    lfoGain = audioCtx.createGain();
+                    lfoGain.gain.value = 0.01;
+                    vibeLFO.connect(lfoGain);
+                    lfoGain.connect(delayNode.delayTime);
+                    lastNode.connect(delayNode);
+                    delayNode.connect(tremolo);
+                    lastNode = tremolo;
+                } else {
+                    vibeLFO.connect(tremolo.gain);
+                    lastNode.connect(tremolo);
+                    lastNode = tremolo;
+                }
+                vibeLFO.start();
+            }
+
+            lastNode.connect(gainNode);
+            gainNode.connect(analyser);
+            analyser.connect(wetGain);
+
+            source.connect(dryGain);
+            dryGain.connect(audioCtx.destination);
+            wetGain.connect(audioCtx.destination);
+        } catch (e) {
+            console.warn('Reconnect error:', e);
+        }
+    }
+
+    function togglePlayback() {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        if (sample.paused) {
+            setupAudio();
+            sample.currentTime = 0;
+            sample.play();
+            playButton.textContent = 'Stop';
+        } else {
+            sample.pause();
+            playButton.textContent = 'Play';
+        }
+    }
+
+    function toggleBypass() {
+        bypass = !bypass;
+        dryGain.gain.value = bypass ? 1 : 0;
+        wetGain.gain.value = bypass ? 0 : 1;
+        document.getElementById('bypassButton').innerText = bypass ? 'Original' : 'Effects';
+    }
+
+    function draw() {
+        requestAnimationFrame(draw);
+        analyser.getByteTimeDomainData(dataArray);
+
+        canvasCtx.fillStyle = '#111';
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+        canvasCtx.lineWidth = 2;
+        canvasCtx.strokeStyle = '#0f0';
+
+        canvasCtx.beginPath();
+        const sliceWidth = canvas.width * 1.0 / dataArray.length;
+        let x = 0;
+
+        for (let i = 0; i < dataArray.length; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = v * canvas.height / 2;
+            if (i === 0) canvasCtx.moveTo(x, y);
+            else canvasCtx.lineTo(x, y);
+            x += sliceWidth;
+        }
+        canvasCtx.lineTo(canvas.width, canvas.height / 2);
+        canvasCtx.stroke();
+    }
+
+    window.togglePlayback = togglePlayback;
+    window.toggleBypass = toggleBypass;
+    window.reconnectChain = reconnectChain;
+</script>
+</body>
+</html>
