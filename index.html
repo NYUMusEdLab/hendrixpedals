@@ -15,7 +15,7 @@
 </head>
 <body>
 <h1>Jimi Hendrix Pedalboard Simulator</h1>
-<audio id="guitarSample" src="guitarsample.mp3" loop crossorigin="anonymous"></audio>
+<audio id="guitarSample" src="HendrixGuitarLoop.mp3" loop crossorigin="anonymous"></audio>
 <button id="playButton" onclick="togglePlayback()">Play</button>
 <button id="bypassButton" onclick="toggleBypass()">Original</button>
 
@@ -23,30 +23,31 @@
 
 <div class="controls">
     <div class="pedal">
-        <h3>Wah-Wah</h3>
-        <label><input type="checkbox" id="wahToggle" checked> On</label>
-        <input type="range" id="wahFreq" min="300" max="2000" value="1000">
-    </div>
-    <div class="pedal">
-        <h3>Octavia</h3>
-        <label><input type="checkbox" id="octaveToggle" checked> On</label>
-        <input type="range" id="octaveMix" min="0" max="1" step="0.01" value="0.5">
-    </div>
-    <div class="pedal">
-        <h3>Fuzz Face</h3>
-        <label><input type="checkbox" id="fuzzToggle" checked> On</label>
-        <input type="range" id="fuzzGain" min="1" max="50" value="10">
-    </div>
-    <div class="pedal">
-        <h3>Uni-Vibe</h3>
+        <h3>Vibrato & Chorus</h3>
         <label><input type="checkbox" id="vibeToggle" checked> On</label>
-        <label for="vibeMode">Mode</label>
+        <label for="vibeMode"></label>
         <select id="vibeMode">
             <option value="vibrato">Vibrato</option>
             <option value="chorus">Chorus</option>
         </select>
-        <label for="vibeSpeed">Speed</label>
+        <p>
+        <label for="vibeSpeed">Intensity</label>
         <input type="range" id="vibeSpeed" min="0.1" max="10" step="0.1" value="2">
+        </p>
+    </div>
+    <div class="pedal">
+        <h3>Fuzz</h3>
+        <label><input type="checkbox" id="fuzzToggle" checked> On</label>
+        <input type="range" id="fuzzGain" min="1" max="50" value="10">
+    </div>
+    <div class="pedal">
+        <h3>Octave plus Distortion</h3>
+        <label><input type="checkbox" id="octaveToggle" checked> On</label>
+    </div>
+    <div class="pedal">
+        <h3>Wah-Wah</h3>
+        <label><input type="checkbox" id="wahToggle" checked> On</label>
+        <input type="range" id="wahFreq" min="300" max="2000" value="1000">
     </div>
 </div>
 
@@ -58,9 +59,11 @@
     let dryGain, wetGain;
     let bypass = false;
 
+    let wahLFO, wahLFOGain;
     const sample = document.getElementById('guitarSample');
     const playButton = document.getElementById('playButton');
     const canvas = document.getElementById('waveform');
+    const wahFreqSlider = document.getElementById('wahFreq');
     canvasCtx = canvas.getContext('2d');
 
     function makeFuzzCurve(gain = 10) {
@@ -79,13 +82,13 @@
 
         wahFilter = audioCtx.createBiquadFilter();
         wahFilter.type = 'bandpass';
-        wahFilter.frequency.value = document.getElementById('wahFreq').value;
+        wahFilter.frequency.value = wahFreqSlider.value;
+        startAutoWah();
 
         octaveUp = audioCtx.createWaveShaper();
         let octCurve = new Float32Array(65536);
         for (let i = 0; i < 65536; i++) {
             let x = (i - 32768) / 32768;
-            // Simulates a folded-over upper harmonic + fuzz response
             octCurve[i] = Math.tanh((2 * x) + (x * x)) * (x < 0 ? -1 : 1);
         }
         octaveUp.curve = octCurve;
@@ -109,10 +112,8 @@
         wetGain.gain.value = 1;
 
         reconnectChain();
-
         draw();
 
-        document.getElementById('wahFreq').oninput = e => wahFilter.frequency.value = e.target.value;
         document.getElementById('fuzzGain').oninput = e => fuzz.curve = makeFuzzCurve(e.target.value);
         document.getElementById('vibeSpeed').oninput = e => vibeLFO.frequency.value = e.target.value;
 
@@ -127,14 +128,15 @@
             updateVisual();
         });
 
-        document.getElementById('vibeMode').onchange = reconnectChain;
+        document.getElementById('vibeMode').onchange = () => {
+            reconnectChain();
+        };
     }
 
     function reconnectChain() {
         try {
             if (!source) return;
 
-            // Disconnect all
             source.disconnect();
             wahFilter.disconnect();
             octaveUp.disconnect();
@@ -146,20 +148,8 @@
             if (lfoGain) lfoGain.disconnect();
             if (vibeLFO) vibeLFO.disconnect();
 
-            // Start routing
             let lastNode = source;
-            if (document.getElementById('wahToggle').checked) {
-                lastNode.connect(wahFilter);
-                lastNode = wahFilter;
-            }
-            if (document.getElementById('octaveToggle').checked) {
-                lastNode.connect(octaveUp);
-                lastNode = octaveUp;
-            }
-            if (document.getElementById('fuzzToggle').checked) {
-                lastNode.connect(fuzz);
-                lastNode = fuzz;
-            }
+
             if (document.getElementById('vibeToggle').checked) {
                 const mode = document.getElementById('vibeMode').value;
                 vibeLFO = audioCtx.createOscillator();
@@ -168,20 +158,65 @@
 
                 if (mode === 'chorus') {
                     delayNode = audioCtx.createDelay();
-                    delayNode.delayTime.value = 0.03;
+                    delayNode.delayTime.value = 0.045;
                     lfoGain = audioCtx.createGain();
-                    lfoGain.gain.value = 0.01;
+                    lfoGain.gain.value = 0.015;
                     vibeLFO.connect(lfoGain);
                     lfoGain.connect(delayNode.delayTime);
+
+                    const chorusDry = audioCtx.createGain();
+                    const chorusWet = audioCtx.createGain();
+                    chorusDry.gain.value = 0.6;
+                    chorusWet.gain.value = 0.7;
+
+                    lastNode.connect(chorusDry);
                     lastNode.connect(delayNode);
-                    delayNode.connect(tremolo);
+                    delayNode.connect(chorusWet);
+
+                    const chorusMix = audioCtx.createGain();
+                    chorusDry.connect(chorusMix);
+                    chorusWet.connect(chorusMix);
+
+                    chorusMix.connect(tremolo);
                     lastNode = tremolo;
-                } else {
+                } else { // vibrato mode
+                    // Direct modulation of amplitude to simulate pitch vibrato
                     vibeLFO.connect(tremolo.gain);
                     lastNode.connect(tremolo);
                     lastNode = tremolo;
                 }
+
                 vibeLFO.start();
+            }
+
+            if (document.getElementById('fuzzToggle').checked) {
+                lastNode.connect(fuzz);
+                lastNode = fuzz;
+            }
+
+            if (document.getElementById('octaveToggle').checked) {
+                const octMix = 0.5;
+                const octaveDry = audioCtx.createGain();
+                const octaveWet = audioCtx.createGain();
+                octaveDry.gain.value = 1 - octMix;
+                octaveWet.gain.value = octMix;
+
+                const octSplit = audioCtx.createGain();
+                const octMerge = audioCtx.createGain();
+
+                lastNode.connect(octSplit);
+                octSplit.connect(octaveDry);
+                octSplit.connect(octaveUp);
+                octaveUp.connect(octaveWet);
+                octaveDry.connect(octMerge);
+                octaveWet.connect(octMerge);
+
+                lastNode = octMerge;
+            }
+
+            if (document.getElementById('wahToggle').checked) {
+                lastNode.connect(wahFilter);
+                lastNode = wahFilter;
             }
 
             lastNode.connect(gainNode);
@@ -214,6 +249,36 @@
         dryGain.gain.value = bypass ? 1 : 0;
         wetGain.gain.value = bypass ? 0 : 1;
         document.getElementById('bypassButton').innerText = bypass ? 'Original' : 'Effects';
+    }
+
+    function startAutoWah() {
+        wahLFO = audioCtx.createOscillator();
+        wahLFO.type = 'sine';
+        wahLFO.frequency.value = 1.5;
+
+        wahLFOGain = audioCtx.createGain();
+        wahLFOGain.gain.value = 800;
+
+        wahLFO.connect(wahLFOGain);
+        wahLFOGain.connect(wahFilter.frequency);
+        wahLFO.start();
+
+        animateWahSlider();
+    }
+
+    function animateWahSlider() {
+        const base = 1100;
+        const depth = 800;
+        const speed = 1.5;
+        let startTime = audioCtx.currentTime;
+
+        function update() {
+            const elapsed = audioCtx.currentTime - startTime;
+            const value = base + Math.sin(elapsed * speed * 2 * Math.PI) * depth;
+            wahFreqSlider.value = value;
+            requestAnimationFrame(update);
+        }
+        requestAnimationFrame(update);
     }
 
     function draw() {
