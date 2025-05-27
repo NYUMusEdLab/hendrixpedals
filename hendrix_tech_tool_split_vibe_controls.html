@@ -215,12 +215,12 @@
 
         document.getElementById('vibeMode').onchange = () => { updateVibeUI(); reconnectChain(); };
 
-        function updateVibeUI() {
-            const mode = document.getElementById('vibeMode').value;
-            document.getElementById('vibeSpeed').disabled = (mode !== 'vibrato');
-        }
+    function updateVibeUI() {
+        const mode = document.getElementById('vibeMode').value;
+        document.getElementById('vibeSpeed').disabled = (mode !== 'vibrato');
+    }
 
-        updateVibeUI(); // Initialize on load
+    updateVibeUI(); // Initialize on load
     }
 
     function reconnectChain() {
